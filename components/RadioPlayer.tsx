@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useEffect, useRef } from 'react';
-import { Room, DataPacket_Kind, RemoteParticipant } from 'livekit-client';
+import { Room, RemoteParticipant } from 'livekit-client';
 import { Play, Pause, Volume2, Radio, Music2 } from 'lucide-react';
 
 interface RadioPlayerProps {
@@ -183,7 +183,7 @@ export function RadioPlayer({ room }: RadioPlayerProps) {
                 isPlaying,
                 volume
               })),
-              DataPacket_Kind.RELIABLE
+              { reliable: true }
             );
             return; // Don't process this as a remote action
           }
@@ -209,7 +209,7 @@ export function RadioPlayer({ room }: RadioPlayerProps) {
           action: 'requestSync',
           senderId: room.localParticipant.identity 
         })),
-        DataPacket_Kind.RELIABLE
+        { reliable: true }
       );
     }
 
@@ -229,7 +229,7 @@ export function RadioPlayer({ room }: RadioPlayerProps) {
     };
     room.localParticipant.publishData(
       encoder.encode(JSON.stringify(message)),
-      DataPacket_Kind.RELIABLE
+      { reliable: true }
     );
   };
 
