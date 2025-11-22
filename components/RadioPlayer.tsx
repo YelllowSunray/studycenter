@@ -74,13 +74,13 @@ export function RadioPlayer({ room }: RadioPlayerProps) {
     if (!room) return;
 
     // Determine if this participant is the host (first to join)
-    if (!room.participants || room.participants.size === 0) {
+    if (!room.remoteParticipants || room.remoteParticipants.size === 0) {
       hostRef.current = true;
       setIsHost(true);
     } else {
       // Check if we're the first participant (host)
       let isFirst = true;
-      room.participants.forEach((participant) => {
+      room.remoteParticipants.forEach((participant) => {
         if (participant.identity && room.localParticipant?.identity && 
             participant.identity < room.localParticipant.identity) {
           isFirst = false;
