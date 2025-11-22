@@ -69,6 +69,36 @@ export function RadioPlayer({ room }: RadioPlayerProps) {
   const hostRef = useRef(false);
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const isProcessingRemoteAction = useRef(false);
+  const currentAudioUrlRef = useRef<string | null>(null);
+  const isPlayingRef = useRef(false);
+  const lastSyncTimeRef = useRef<number>(0);
+  const playPromiseRef = useRef<Promise<void> | null>(null);
+
+  // Initialize audio element error handlers
+  useEffect(() => {
+    const audio = audioRef.current;
+    if (!audio) return;
+    
+    const handleError = (e: Event) => {
+      console.error('Audio element error:', e);
+      setIsPlaying(false);
+      isPlayingRef.current = false;
+      setStreamError('Stream error. Try another station or check your connection.');
+    };
+    
+    const handleEnded = () => {
+      setIsPlaying(false);
+      isPlayingRef.current = false;
+    };
+    
+    audio.addEventListener('error', handleError);
+    audio.addEventListener('ended', handleEnded);
+    
+    return () => {
+      audio.removeEventListener('error', handleError);
+      audio.removeEventListener('ended', handleEnded);
+    };
+  }, []);
 
   useEffect(() => {
     if (!room) return;
@@ -105,22 +135,48 @@ export function RadioPlayer({ room }: RadioPlayerProps) {
           if (data.action === 'play') {
             setCurrentStation(data.station);
             setIsPlaying(true);
+            isPlayingRef.current = true;
             if (data.volume !== undefined) {
               setVolume(data.volume);
             }
-            // Play audio
+            // Play audio - only reload if URL changed
             if (audioRef.current) {
-              audioRef.current.src = data.station.url;
-              audioRef.current.volume = (data.volume || volume) / 100;
-              setStreamError(null);
-              audioRef.current.play().catch(err => {
-                console.error('Error playing audio:', err);
-                setIsPlaying(false);
-                setStreamError(`Unable to play ${data.station.name}. Try another station.`);
-              });
+              const newUrl = data.station.url;
+              if (currentAudioUrlRef.current !== newUrl) {
+                // Cancel any pending play promise
+                if (playPromiseRef.current) {
+                  playPromiseRef.current.catch(() => {}); // Ignore abort errors
+                }
+                currentAudioUrlRef.current = newUrl;
+                audioRef.current.src = newUrl;
+                audioRef.current.volume = (data.volume || volume) / 100;
+                setStreamError(null);
+                playPromiseRef.current = audioRef.current.play().catch(err => {
+                  // Ignore AbortError (expected when changing sources)
+                  if (err.name !== 'AbortError') {
+                    console.error('Error playing audio:', err);
+                    setIsPlaying(false);
+                    isPlayingRef.current = false;
+                    setStreamError(`Unable to play ${data.station.name}. Try another station.`);
+                  }
+                  playPromiseRef.current = null;
+                });
+              } else if (!isPlayingRef.current) {
+                // Same URL, just resume
+                audioRef.current.volume = (data.volume || volume) / 100;
+                playPromiseRef.current = audioRef.current.play().catch(err => {
+                  if (err.name !== 'AbortError') {
+                    console.error('Error playing audio:', err);
+                    setIsPlaying(false);
+                    isPlayingRef.current = false;
+                  }
+                  playPromiseRef.current = null;
+                });
+              }
             }
           } else if (data.action === 'pause') {
             setIsPlaying(false);
+            isPlayingRef.current = false;
             if (audioRef.current) {
               audioRef.current.pause();
             }
@@ -132,16 +188,42 @@ export function RadioPlayer({ room }: RadioPlayerProps) {
             // Use the isPlaying state from the message
             if (data.isPlaying !== undefined) {
               setIsPlaying(data.isPlaying);
+              isPlayingRef.current = data.isPlaying;
               if (audioRef.current) {
                 if (data.isPlaying) {
-                  audioRef.current.src = data.station.url;
-                  audioRef.current.volume = (data.volume || volume) / 100;
-                  setStreamError(null);
-                  audioRef.current.play().catch(err => {
-                    console.error('Error playing audio:', err);
-                    setIsPlaying(false);
-                    setStreamError(`Unable to play ${data.station.name}. Try another station.`);
-                  });
+                  const newUrl = data.station.url;
+                  if (currentAudioUrlRef.current !== newUrl) {
+                    // Cancel any pending play promise
+                    if (playPromiseRef.current) {
+                      playPromiseRef.current.catch(() => {}); // Ignore abort errors
+                    }
+                    currentAudioUrlRef.current = newUrl;
+                    audioRef.current.src = newUrl;
+                    audioRef.current.volume = (data.volume || volume) / 100;
+                    setStreamError(null);
+                    playPromiseRef.current = audioRef.current.play().catch(err => {
+                      if (err.name !== 'AbortError') {
+                        console.error('Error playing audio:', err);
+                        setIsPlaying(false);
+                        isPlayingRef.current = false;
+                        setStreamError(`Unable to play ${data.station.name}. Try another station.`);
+                      }
+                      playPromiseRef.current = null;
+                    });
+                  } else {
+                    // Same URL, just update volume and resume if needed
+                    audioRef.current.volume = (data.volume || volume) / 100;
+                    if (audioRef.current.paused) {
+                      playPromiseRef.current = audioRef.current.play().catch(err => {
+                        if (err.name !== 'AbortError') {
+                          console.error('Error playing audio:', err);
+                          setIsPlaying(false);
+                          isPlayingRef.current = false;
+                        }
+                        playPromiseRef.current = null;
+                      });
+                    }
+                  }
                 } else {
                   audioRef.current.pause();
                 }
@@ -153,22 +235,59 @@ export function RadioPlayer({ room }: RadioPlayerProps) {
               audioRef.current.volume = data.volume / 100;
             }
           } else if (data.action === 'sync') {
+            // Throttle sync messages to prevent rapid reloads
+            const now = Date.now();
+            if (now - lastSyncTimeRef.current < 2000) {
+              // Skip sync if we got one recently
+              return;
+            }
+            lastSyncTimeRef.current = now;
+            
             // Full sync - update everything
             setCurrentStation(data.station);
             setIsPlaying(data.isPlaying);
+            isPlayingRef.current = data.isPlaying || false;
             setVolume(data.volume || 50);
             if (audioRef.current) {
-              audioRef.current.src = data.station.url;
-              audioRef.current.volume = (data.volume || 50) / 100;
-              setStreamError(null);
-              if (data.isPlaying) {
-                audioRef.current.play().catch(err => {
-                  console.error('Error playing audio:', err);
-                  setIsPlaying(false);
-                  setStreamError(`Unable to play ${data.station.name}. Try another station.`);
-                });
+              const newUrl = data.station.url;
+              // Only reload if URL changed or not currently loaded
+              if (currentAudioUrlRef.current !== newUrl || !audioRef.current.src) {
+                // Cancel any pending play promise
+                if (playPromiseRef.current) {
+                  playPromiseRef.current.catch(() => {}); // Ignore abort errors
+                }
+                currentAudioUrlRef.current = newUrl;
+                audioRef.current.src = newUrl;
+                audioRef.current.volume = (data.volume || 50) / 100;
+                setStreamError(null);
+                if (data.isPlaying) {
+                  playPromiseRef.current = audioRef.current.play().catch(err => {
+                    if (err.name !== 'AbortError') {
+                      console.error('Error playing audio:', err);
+                      setIsPlaying(false);
+                      isPlayingRef.current = false;
+                      setStreamError(`Unable to play ${data.station.name}. Try another station.`);
+                    }
+                    playPromiseRef.current = null;
+                  });
+                } else {
+                  audioRef.current.pause();
+                }
               } else {
-                audioRef.current.pause();
+                // Same URL, just update volume and play state
+                audioRef.current.volume = (data.volume || 50) / 100;
+                if (data.isPlaying && audioRef.current.paused) {
+                  playPromiseRef.current = audioRef.current.play().catch(err => {
+                    if (err.name !== 'AbortError') {
+                      console.error('Error playing audio:', err);
+                      setIsPlaying(false);
+                      isPlayingRef.current = false;
+                    }
+                    playPromiseRef.current = null;
+                  });
+                } else if (!data.isPlaying && !audioRef.current.paused) {
+                  audioRef.current.pause();
+                }
               }
             }
           } else if (data.action === 'requestSync' && isHost) {
@@ -238,20 +357,34 @@ export function RadioPlayer({ room }: RadioPlayerProps) {
 
     if (isPlaying) {
       setIsPlaying(false);
+      isPlayingRef.current = false;
       if (audioRef.current) {
         audioRef.current.pause();
       }
       sendRadioControl('pause');
     } else {
       setIsPlaying(true);
+      isPlayingRef.current = true;
       if (audioRef.current) {
-        audioRef.current.src = currentStation.url;
+        const newUrl = currentStation.url;
+        if (currentAudioUrlRef.current !== newUrl) {
+          // Cancel any pending play promise
+          if (playPromiseRef.current) {
+            playPromiseRef.current.catch(() => {}); // Ignore abort errors
+          }
+          currentAudioUrlRef.current = newUrl;
+          audioRef.current.src = newUrl;
+        }
         audioRef.current.volume = volume / 100;
         setStreamError(null);
-        audioRef.current.play().catch(err => {
-          console.error('Error playing audio:', err);
-          setIsPlaying(false);
-          setStreamError(`Unable to play ${currentStation.name}. The stream may be unavailable or blocked. Try another station.`);
+        playPromiseRef.current = audioRef.current.play().catch(err => {
+          if (err.name !== 'AbortError') {
+            console.error('Error playing audio:', err);
+            setIsPlaying(false);
+            isPlayingRef.current = false;
+            setStreamError(`Unable to play ${currentStation.name}. The stream may be unavailable or blocked. Try another station.`);
+          }
+          playPromiseRef.current = null;
         });
       }
       sendRadioControl('play', { station: currentStation, volume });
@@ -264,16 +397,27 @@ export function RadioPlayer({ room }: RadioPlayerProps) {
     setCurrentStation(station);
     // If currently playing, switch to new station
     if (isPlaying && audioRef.current) {
-      audioRef.current.src = station.url;
+      const newUrl = station.url;
+      // Cancel any pending play promise
+      if (playPromiseRef.current) {
+        playPromiseRef.current.catch(() => {}); // Ignore abort errors
+      }
+      currentAudioUrlRef.current = newUrl;
+      audioRef.current.src = newUrl;
       audioRef.current.volume = volume / 100;
       setStreamError(null);
-      audioRef.current.play().catch(err => {
-        console.error('Error playing audio:', err);
-        setIsPlaying(false);
-        setStreamError(`Unable to play ${station.name}. The stream may be unavailable. Try another station.`);
+      playPromiseRef.current = audioRef.current.play().catch(err => {
+        if (err.name !== 'AbortError') {
+          console.error('Error playing audio:', err);
+          setIsPlaying(false);
+          isPlayingRef.current = false;
+          setStreamError(`Unable to play ${station.name}. The stream may be unavailable. Try another station.`);
+        }
+        playPromiseRef.current = null;
       });
       sendRadioControl('change', { station, volume, isPlaying: true });
     } else {
+      currentAudioUrlRef.current = station.url;
       sendRadioControl('change', { station, volume, isPlaying: false });
     }
   };
